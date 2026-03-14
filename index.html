@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Three.js Basic Game</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+        }
+        canvas {
+            display: block;
+        }
+        #ui {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            font-family: sans-serif;
+            font-size: 18px;
+            pointer-events: none;
+            text-shadow: 1px 1px 2px black;
+        }
+    </style>
+</head>
+<body>
+    <div id="ui">좌클릭: 블록 설치<br>Shift + 좌클릭: 블록 삭제<br>마우스 드래그: 회전<br>마우스 우클릭 드래그: 이동</div>
+    
+    <!-- Import map to load Three.js dynamically -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+    <script type="module" src="./main.js"></script>
+</body>
+</html>
