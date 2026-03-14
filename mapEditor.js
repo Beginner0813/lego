@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { BLOCK_TYPES } from './blockTypes.js';
+import { playPlaceEffect } from './vfx.js';
 
 // 맵퍼 상태 및 공통 자원 관리용 모듈
 export class MapEditor {
@@ -14,18 +16,25 @@ export class MapEditor {
 
         this.isShiftDown = false;
         this.pointerDownPos = new THREE.Vector2();
+        this._isDragging = false; // 드래그 여부 체크용
 
-        // Voxel Placement Logic
+        // 블록 미리보기 Mesh
         const rollOverGeo = new THREE.BoxGeometry(1, 1, 1);
-        const rollOverMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff, opacity: 0.5, transparent: true });
-        this.rollOverMesh = new THREE.Mesh(rollOverGeo, rollOverMaterial);
-        // 약간 크게 만들어서 겹쳐 보이지 않게 함
+        this.rollOverMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff, opacity: 0.5, transparent: true });
+        this.rollOverMesh = new THREE.Mesh(rollOverGeo, this.rollOverMaterial);
         this.rollOverMesh.scale.set(1.02, 1.02, 1.02);
         this.scene.add(this.rollOverMesh);
 
         this.cubeGeo = new THREE.BoxGeometry(1, 1, 1);
-        // Townscaper風 파스텔톤 색상들
-        this.colors = [0xeb6468, 0xefad50, 0x76b052, 0x47b2c5, 0xe2d6b3, 0x8a91a1];
+
+        // 선택된 블록 타입 (blockTypes.js에서 관리)
+        this.currentBlockTypeIndex = 0;
+
+        // 블록 선택 UI 동적 추가
+        this.createBlockSelectorUI();
+
+        // 클릭 판별을 위한 수평 Y=0 평면 (바닥면)
+        this.groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 
         this.initEventListeners();
     }
@@ -38,100 +47,191 @@ export class MapEditor {
         document.addEventListener('keyup', this.onDocumentKeyUp.bind(this));
     }
 
-    onPointerMove(event) {
-        this.pointer.set((event.clientX / window.innerWidth) * 2 - 1, -(event.clientY / window.innerHeight) * 2 + 1);
+    /** 블록 선택 UI를 동적으로 생성 */
+    createBlockSelectorUI() {
+        const container = document.createElement('div');
+        container.id = 'block-selector';
+        Object.assign(container.style, {
+            position: 'absolute', bottom: '20px', left: '50%',
+            transform: 'translateX(-50%)',
+            display: 'flex', gap: '8px',
+            background: 'rgba(0,0,0,0.45)',
+            padding: '8px 14px', borderRadius: '12px',
+            backdropFilter: 'blur(6px)',
+        });
 
+        BLOCK_TYPES.forEach((type, i) => {
+            const btn = document.createElement('button');
+            btn.dataset.index = i;
+            btn.title = type.label;
+            btn.innerHTML = `<span style="font-size:22px">${type.emoji}</span><br>
+                             <span style="font-size:10px;color:#ccc">${type.label}</span>`;
+            Object.assign(btn.style, {
+                background: i === 0 ? 'rgba(255,255,255,0.3)' : 'transparent',
+                border: i === 0 ? '2px solid #fff' : '2px solid transparent',
+                borderRadius: '8px', cursor: 'pointer',
+                padding: '6px 10px', color: '#fff', textAlign: 'center',
+                transition: 'all 0.15s',
+            });
+            btn.addEventListener('click', () => this.selectBlock(i));
+            container.appendChild(btn);
+        });
+
+        document.body.appendChild(container);
+        this._selectorContainer = container;
+    }
+
+    selectBlock(index) {
+        this.currentBlockTypeIndex = index;
+        // 단순히 선택된 버튼 하이라이트
+        [...this._selectorContainer.querySelectorAll('button')].forEach((btn, i) => {
+            const active = i === index;
+            btn.style.background = active ? 'rgba(255,255,255,0.3)' : 'transparent';
+            btn.style.border = active ? '2px solid #fff' : '2px solid transparent';
+        });
+    }
+
+    /**
+     * 마우스 위치를 normalized device coordinates로 변환해 레이케스터 업데이트
+     */
+    updatePointer(event) {
+        this.pointer.set(
+            (event.clientX / window.innerWidth) * 2 - 1,
+            -(event.clientY / window.innerHeight) * 2 + 1
+        );
         this.raycaster.setFromCamera(this.pointer, this.camera);
-        const intersects = this.raycaster.intersectObjects(this.objects, false);
+    }
 
-        if (intersects.length > 0) {
-            const intersect = intersects[0];
+    /**
+     * 바닥(y=0) 위 클릭 위치를 격자에 스냅하여 반환
+     * 반환값: THREE.Vector3 | null
+     */
+    getSnappedGroundPos() {
+        const hitPoint = new THREE.Vector3();
+        const hit = this.raycaster.ray.intersectPlane(this.groundPlane, hitPoint);
+        if (!hit) return null;
 
-            // 대상이 바닥(plane)이 아닐 때만 면의 법선(normal)을 더해 바깥쪽으로 위치시킴
-            const calcPos = new THREE.Vector3().copy(intersect.point);
-            if (intersect.object !== this.plane) {
-                calcPos.add(intersect.face.normal);
-            }
+        // X와 Z를 격자 단위(1)로 스냅 (각 셀 중심인 0.5 단위)
+        hitPoint.x = Math.floor(hitPoint.x) + 0.5;
+        hitPoint.y = 0.5; // 블록이 바닥 위에 딱 붙도록
+        hitPoint.z = Math.floor(hitPoint.z) + 0.5;
+        return hitPoint;
+    }
 
-            this.rollOverMesh.position.copy(calcPos);
-            // Grid 스냅 (0.5 단위로 중앙 정렬)
-            this.rollOverMesh.position.floor().addScalar(0.5);
+    onPointerMove(event) {
+        this.updatePointer(event);
 
-            // Y 좌표가 정확히 바닥 위(0.5지점)이고, Z 좌표가 0일 때만 유효함
-            let isValidPosition = (this.rollOverMesh.position.z === 0.5 && this.rollOverMesh.position.y === 0.5);
-
-            // 삭제 모드일 때 클릭한 대상이 바닥이 아니라면, 해당 블록 위치에 표시
-            if (this.isShiftDown && intersect.object !== this.plane) {
-                this.rollOverMesh.position.copy(intersect.object.position);
-                isValidPosition = true;
-            }
-
-            if (isValidPosition) {
+        // 삭제 모드: 기존 블록 위에 빨간 미리보기
+        if (this.isShiftDown) {
+            const blockHits = this.raycaster.intersectObjects(
+                this.objects.filter(o => o !== this.plane), false
+            );
+            if (blockHits.length > 0) {
+                this.rollOverMesh.position.copy(blockHits[0].object.position);
                 this.rollOverMesh.visible = true;
-                // 지울 때는 빨간색, 설치할 때는 흰색으로 반투명 표시
-                this.rollOverMesh.material.color.setHex(this.isShiftDown ? 0xff0000 : 0xffffff);
-            } else {
-                this.rollOverMesh.visible = false; // 격자 바닥 위나 Z=0 영역 밖이면 가이드 숨김
+                this.rollOverMaterial.color.setHex(0xff0000);
+                return;
             }
+            this.rollOverMesh.visible = false;
+            return;
+        }
+
+        // 설치 모드: 기존 블록 면에 붙이거나 바닥에 설치
+        const blockHits = this.raycaster.intersectObjects(
+            this.objects.filter(o => o !== this.plane), false
+        );
+
+        if (blockHits.length > 0) {
+            // 맞닿은 면의 법선 방향으로 한 칸 이동하여 미리보기
+            const hit = blockHits[0];
+            const adjacent = hit.object.position.clone().add(
+                hit.face.normal.clone().round()
+            );
+            const occupied = this.objects.find(
+                o => o !== this.plane && o.position.distanceTo(adjacent) < 0.1
+            );
+            this.rollOverMesh.position.copy(adjacent);
+            this.rollOverMesh.visible = !occupied;
+            this.rollOverMaterial.color.setHex(0xffffff);
+            return;
+        }
+
+        // 바닥 격자에 흰색 미리보기
+        const snapped = this.getSnappedGroundPos();
+        if (snapped) {
+            const occupied = this.objects.find(
+                o => o !== this.plane && o.position.distanceTo(snapped) < 0.1
+            );
+            this.rollOverMesh.position.copy(snapped);
+            this.rollOverMesh.visible = !occupied;
+            this.rollOverMaterial.color.setHex(0xffffff);
+        } else {
+            this.rollOverMesh.visible = false;
         }
     }
 
     onPointerDown(event) {
-        if (event.button !== 0) return; // 왼쪽 클릭만 확인
+        if (event.button !== 0) return;
         this.pointerDownPos.set(event.clientX, event.clientY);
     }
 
     onPointerUp(event) {
-        if (event.button !== 0) return; // 왼쪽 클릭만 확인
+        if (event.button !== 0) return;
 
-        // 드래그(시점 이동)와 클릭(블록 설치) 구분
-        if (Math.abs(event.clientX - this.pointerDownPos.x) > 3 || Math.abs(event.clientY - this.pointerDownPos.y) > 3) {
+        // 드래그(시점 회전)와 클릭(블록 설치) 구분
+        if (
+            Math.abs(event.clientX - this.pointerDownPos.x) > 3 ||
+            Math.abs(event.clientY - this.pointerDownPos.y) > 3
+        ) return;
+
+        this.updatePointer(event);
+
+        // --- 삭제 모드 ---
+        if (this.isShiftDown) {
+            const blockHits = this.raycaster.intersectObjects(
+                this.objects.filter(o => o !== this.plane), false
+            );
+            if (blockHits.length > 0) {
+                const target = blockHits[0].object;
+                this.scene.remove(target);
+                this.objects.splice(this.objects.indexOf(target), 1);
+            }
             return;
         }
 
-        this.pointer.set((event.clientX / window.innerWidth) * 2 - 1, -(event.clientY / window.innerHeight) * 2 + 1);
-        this.raycaster.setFromCamera(this.pointer, this.camera);
-        const intersects = this.raycaster.intersectObjects(this.objects, false);
+        // --- 설치 모드 ---
+        // 1순위: 바닥 격자에 스냅 (기본 동작)
+        let placePos = this.getSnappedGroundPos();
 
-        if (intersects.length > 0) {
-            const intersect = intersects[0];
-
-            // Shift 키를 누른 상태면 블록 삭제
-            if (this.isShiftDown) {
-                if (intersect.object !== this.plane) {
-                    this.scene.remove(intersect.object);
-                    this.objects.splice(this.objects.indexOf(intersect.object), 1);
-                }
-                // 아니면 블록 설치
-            } else {
-                const targetPos = new THREE.Vector3().copy(intersect.point);
-                if (intersect.object !== this.plane) {
-                    targetPos.add(intersect.face.normal);
-                }
-                targetPos.floor().addScalar(0.5);
-
-                // z=0 구역이 아니거나, 바로 바닥(y=0.5) 위가 아니면 생성 취소
-                if (targetPos.z !== 0.5 || targetPos.y !== 0.5) return;
-
-                // 동일한 위치에 이미 블록이 있는지 확인 (중복 설치 방지)
-                const exists = this.objects.find(obj => obj !== this.plane && obj.position.distanceTo(targetPos) < 0.1);
-                if (!exists) {
-                    const randomColor = this.colors[Math.floor(Math.random() * this.colors.length)];
-                    const cubeMat = new THREE.MeshStandardMaterial({
-                        color: randomColor,
-                        roughness: 0.6,
-                        metalness: 0.1
-                    });
-
-                    const voxel = new THREE.Mesh(this.cubeGeo, cubeMat);
-                    voxel.position.copy(targetPos);
-                    voxel.castShadow = true;
-                    voxel.receiveShadow = true;
-                    this.scene.add(voxel);
-                    this.objects.push(voxel);
-                }
-            }
+        // 2순위: 커서가 기존 블록의 면 위에 있으면 그 면에 연보이기
+        const blockHits = this.raycaster.intersectObjects(
+            this.objects.filter(o => o !== this.plane), false
+        );
+        if (blockHits.length > 0) {
+            const hit = blockHits[0];
+            placePos = hit.object.position.clone().add(
+                hit.face.normal.clone().round()
+            );
         }
+
+        if (!placePos) return;
+
+        // 중복 설치 방지
+        const exists = this.objects.find(
+            o => o !== this.plane && o.position.distanceTo(placePos) < 0.1
+        );
+        if (exists) return;
+
+        const blockType = BLOCK_TYPES[this.currentBlockTypeIndex];
+        const voxel = new THREE.Mesh(this.cubeGeo, blockType.createMaterial());
+        voxel.position.copy(placePos);
+        voxel.castShadow = true;
+        voxel.receiveShadow = true;
+        this.scene.add(voxel);
+        this.objects.push(voxel);
+
+        // 설치 이펙트 실행
+        playPlaceEffect(this.scene, voxel);
     }
 
     onDocumentKeyDown(event) {
