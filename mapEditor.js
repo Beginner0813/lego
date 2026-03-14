@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { BLOCK_TYPES } from './blockTypes.js';
+import { playPlaceEffect } from './vfx.js';
 
 // 맵퍼 상태 및 공통 자원 관리용 모듈
 export class MapEditor {
@@ -14,6 +16,7 @@ export class MapEditor {
 
         this.isShiftDown = false;
         this.pointerDownPos = new THREE.Vector2();
+        this._isDragging = false; // 드래그 여부 체크용
 
         // 블록 미리보기 Mesh
         const rollOverGeo = new THREE.BoxGeometry(1, 1, 1);
@@ -23,8 +26,12 @@ export class MapEditor {
         this.scene.add(this.rollOverMesh);
 
         this.cubeGeo = new THREE.BoxGeometry(1, 1, 1);
-        // Townscaper風 파스텔톤 색상들
-        this.colors = [0xeb6468, 0xefad50, 0x76b052, 0x47b2c5, 0xe2d6b3, 0x8a91a1];
+
+        // 선택된 블록 타입 (blockTypes.js에서 관리)
+        this.currentBlockTypeIndex = 0;
+
+        // 블록 선택 UI 동적 추가
+        this.createBlockSelectorUI();
 
         // 클릭 판별을 위한 수평 Y=0 평면 (바닥면)
         this.groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
@@ -38,6 +45,50 @@ export class MapEditor {
         document.addEventListener('pointerup', this.onPointerUp.bind(this));
         document.addEventListener('keydown', this.onDocumentKeyDown.bind(this));
         document.addEventListener('keyup', this.onDocumentKeyUp.bind(this));
+    }
+
+    /** 블록 선택 UI를 동적으로 생성 */
+    createBlockSelectorUI() {
+        const container = document.createElement('div');
+        container.id = 'block-selector';
+        Object.assign(container.style, {
+            position: 'absolute', bottom: '20px', left: '50%',
+            transform: 'translateX(-50%)',
+            display: 'flex', gap: '8px',
+            background: 'rgba(0,0,0,0.45)',
+            padding: '8px 14px', borderRadius: '12px',
+            backdropFilter: 'blur(6px)',
+        });
+
+        BLOCK_TYPES.forEach((type, i) => {
+            const btn = document.createElement('button');
+            btn.dataset.index = i;
+            btn.title = type.label;
+            btn.innerHTML = `<span style="font-size:22px">${type.emoji}</span><br>
+                             <span style="font-size:10px;color:#ccc">${type.label}</span>`;
+            Object.assign(btn.style, {
+                background: i === 0 ? 'rgba(255,255,255,0.3)' : 'transparent',
+                border: i === 0 ? '2px solid #fff' : '2px solid transparent',
+                borderRadius: '8px', cursor: 'pointer',
+                padding: '6px 10px', color: '#fff', textAlign: 'center',
+                transition: 'all 0.15s',
+            });
+            btn.addEventListener('click', () => this.selectBlock(i));
+            container.appendChild(btn);
+        });
+
+        document.body.appendChild(container);
+        this._selectorContainer = container;
+    }
+
+    selectBlock(index) {
+        this.currentBlockTypeIndex = index;
+        // 단순히 선택된 버튼 하이라이트
+        [...this._selectorContainer.querySelectorAll('button')].forEach((btn, i) => {
+            const active = i === index;
+            btn.style.background = active ? 'rgba(255,255,255,0.3)' : 'transparent';
+            btn.style.border = active ? '2px solid #fff' : '2px solid transparent';
+        });
     }
 
     /**
@@ -127,7 +178,7 @@ export class MapEditor {
     onPointerUp(event) {
         if (event.button !== 0) return;
 
-        // 드래그와 클릭 구분 (3px 이상 움직이면 드래그로 판단)
+        // 드래그(시점 회전)와 클릭(블록 설치) 구분
         if (
             Math.abs(event.clientX - this.pointerDownPos.x) > 3 ||
             Math.abs(event.clientY - this.pointerDownPos.y) > 3
@@ -152,7 +203,7 @@ export class MapEditor {
         // 1순위: 바닥 격자에 스냅 (기본 동작)
         let placePos = this.getSnappedGroundPos();
 
-        // 2순위: 커서가 기존 블록의 면 위에 있으면 그 면에 붙이기
+        // 2순위: 커서가 기존 블록의 면 위에 있으면 그 면에 연보이기
         const blockHits = this.raycaster.intersectObjects(
             this.objects.filter(o => o !== this.plane), false
         );
@@ -171,19 +222,16 @@ export class MapEditor {
         );
         if (exists) return;
 
-        const randomColor = this.colors[Math.floor(Math.random() * this.colors.length)];
-        const cubeMat = new THREE.MeshStandardMaterial({
-            color: randomColor,
-            roughness: 0.6,
-            metalness: 0.1
-        });
-
-        const voxel = new THREE.Mesh(this.cubeGeo, cubeMat);
-        voxel.position.copy(placePos);  // ← 수정: snapped → placePos
+        const blockType = BLOCK_TYPES[this.currentBlockTypeIndex];
+        const voxel = new THREE.Mesh(this.cubeGeo, blockType.createMaterial());
+        voxel.position.copy(placePos);
         voxel.castShadow = true;
         voxel.receiveShadow = true;
         this.scene.add(voxel);
         this.objects.push(voxel);
+
+        // 설치 이펙트 실행
+        playPlaceEffect(this.scene, voxel);
     }
 
     onDocumentKeyDown(event) {
