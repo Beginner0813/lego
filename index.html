@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -10,9 +11,11 @@
             overflow: hidden;
             background-color: #000;
         }
+
         canvas {
             display: block;
         }
+
         #ui {
             position: absolute;
             top: 20px;
@@ -23,11 +26,49 @@
             pointer-events: none;
             text-shadow: 1px 1px 2px black;
         }
+
+        #ui-container {
+            position: absolute;
+            top: 150px;
+            /* Offset to not overlap with #ui */
+            left: 20px;
+            z-index: 100;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+
+        .toggle-btn {
+            background: rgba(255, 255, 255, 0.8);
+            border: none;
+            padding: 10px 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: bold;
+            color: #333;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            transition: all 0.2s;
+            text-align: left;
+        }
+
+        .toggle-btn:hover {
+            background: #fff;
+            transform: translateY(-2px);
+        }
+
+        .toggle-btn:active {
+            transform: translateY(0);
+        }
     </style>
 </head>
+
 <body>
     <div id="ui">좌클릭: 블록 설치<br>Shift + 좌클릭: 블록 삭제<br>마우스 드래그: 회전<br>마우스 우클릭 드래그: 이동</div>
-    
+    <div id="ui-container">
+        <button id="gridToggle" class="toggle-btn">GRID: ON</button>
+    </div>
+
     <!-- Import map to load Three.js dynamically -->
     <script type="importmap">
         {
@@ -39,4 +80,5 @@
     </script>
     <script type="module" src="./main.js"></script>
 </body>
+
 </html>
